@@ -10,16 +10,17 @@ import gdown
 # Suppress warnings
 warnings.filterwarnings("ignore", message="The attention mask is not set and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.")
 
+# Define the folder where the model will be saved
+MODEL_DIR = "model"
+
+# Google Drive folder ID (Extract from your shared link)
+GDRIVE_FOLDER_ID = "1wjy2E0TCAZf92lwcvLRKTU5WG1qIKE3n"
+
 # Function to download the model from Google Drive
 def download_model():
-    folder_id = "1wjy2E0TCAZf92lwcvLRKTU5WG1qIKE3n"  # Replace with your actual Google Drive folder ID
-    model_path = "Model"  # Local folder to store the model
-
-    if not os.path.exists(model_path):  # Only download if it doesn't already exist
-        os.makedirs(model_path)
-        gdown.download_folder(id=folder_id, output=model_path, quiet=False)
-
-    return model_path
+    if not os.path.exists(MODEL_DIR):  # Download only if the model is not already present
+        os.makedirs(MODEL_DIR)
+        gdown.download_folder(id=GDRIVE_FOLDER_ID, output=MODEL_DIR, quiet=False)
 
 # Load the model and tokenizer
 def load_model(model_path):
@@ -29,33 +30,30 @@ def load_model(model_path):
 def load_tokenizer(tokenizer_path):
     tokenizer = GPT2Tokenizer.from_pretrained(tokenizer_path)
     
-    # Set pad_token_id if missing
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
     
     return tokenizer
 
-# FastAPI app initialization
+# Initialize FastAPI app
 app = FastAPI()
 
-# Download the model and load it
-model_path = download_model()
-model = load_model(model_path)
-tokenizer = load_tokenizer(model_path)
+# Download and load the model
+download_model()
+model = load_model(MODEL_DIR)
+tokenizer = load_tokenizer(MODEL_DIR)
 
-# Define the input structure
+# Define request structure
 class QuestionRequest(BaseModel):
     question: str
-    continue_generation: bool = False  # To check if user wants to continue the response
+    continue_generation: bool = False
 
 def generate_text(model, tokenizer, sequence, max_length, continue_generation=False):
-    # Encode the question
+    # Encode input
     ids = tokenizer.encode(sequence, return_tensors='pt')
+    attention_mask = (ids != tokenizer.pad_token_id).long()
 
-    # Create attention mask
-    attention_mask = (ids != tokenizer.pad_token_id).long()  
-
-    # Generate the model's response
+    # Generate response
     final_outputs = model.generate(
         ids,
         attention_mask=attention_mask,
@@ -66,36 +64,13 @@ def generate_text(model, tokenizer, sequence, max_length, continue_generation=Fa
         top_p=0.95,
     )
 
-    # Decode the output and clean it
+    # Process and clean output
     output_text = tokenizer.decode(final_outputs[0], skip_special_tokens=True)
+    cleaned_answer = re.sub(r"\[Q\]|\[A\]", "", output_text).strip()
 
-    # Step 1: Remove unwanted tags
-    cleaned_answer = re.sub(r"\[Q\]|\[A\]", "", output_text)
+    return cleaned_answer
 
-    # Step 2: Ensure the period is retained
-    cleaned_answer = re.sub(r'(\s*\?)(?=\s*$)', '.', cleaned_answer)
-
-    # Step 3: Remove everything before and including the first newline
-    cleaned_answer = cleaned_answer.split('\n', 1)[-1]
-
-    # Step 4: Ensure there are no extra newlines
-    cleaned_answer = re.sub(r'\n+', ' ', cleaned_answer)
-
-    # Step 5: Keep only complete sentences
-    sentences = re.split(r'(?<=[.!?]) +', cleaned_answer)
-    complete_sentences = [sentence for sentence in sentences if sentence.endswith('.')]
-    cleaned_answer = ' '.join(complete_sentences)
-
-    return cleaned_answer.strip()
-
-@app.post("/answer/") 
+@app.post("/answer/")
 async def get_answer(request: QuestionRequest):
-    # Get the question from the request
-    question = request.question
-    continue_generation = request.continue_generation
-
-    # Generate the answer using the fine-tuned model
-    answer = generate_text(model, tokenizer, question, max_length=50, continue_generation=continue_generation)
-
-    # Return the generated answer as a JSON response
+    answer = generate_text(model, tokenizer, request.question, max_length=50, continue_generation=request.continue_generation)
     return {"answer": answer}
